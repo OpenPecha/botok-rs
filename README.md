@@ -15,15 +15,16 @@ This is a Rust port of the Python [botok](https://github.com/OpenPecha/botok) li
 
 ## Installation
 
-### Python (recommended)
+### Python
 
 ```bash
-pip install botok-rs
+pip install git+https://github.com/OpenPecha/botok-rs.git
 ```
 
 Or build from source:
 
 ```bash
+git clone https://github.com/OpenPecha/botok-rs.git
 cd botok-rs
 pip install maturin
 maturin build --features python --release
