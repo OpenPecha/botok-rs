@@ -45,6 +45,16 @@ impl Tokenizer {
 
     /// Tokenize a string with configurable options
     pub fn tokenize_with_options(&self, text: &str, split_affixes: bool) -> Vec<Token> {
+        self.tokenize_with_full_options(text, split_affixes, false)
+    }
+
+    /// Tokenize a string with all options
+    /// 
+    /// # Arguments
+    /// * `text` - The text to tokenize
+    /// * `split_affixes` - Whether to split affixed particles into separate tokens
+    /// * `spaces_as_punct` - Whether to treat spaces as punctuation tokens
+    pub fn tokenize_with_full_options(&self, text: &str, split_affixes: bool, spaces_as_punct: bool) -> Vec<Token> {
         // Normalize Unicode (NFC normalization)
         let normalized: String = text.nfc().collect();
         
@@ -52,10 +62,109 @@ impl Tokenizer {
         let chunks = chunker.make_chunks();
         let mut tokens = self.tokenize_chunks(&chunks, &normalized);
         
+        // If spaces_as_punct is enabled, split space-containing tokens
+        if spaces_as_punct {
+            tokens = self.split_spaces_as_punct(tokens);
+        }
+        
         // Apply post-processing
         apply_all_modifiers(&mut tokens, split_affixes);
         
         tokens
+    }
+
+    /// Split tokens that contain spaces into separate space tokens
+    fn split_spaces_as_punct(&self, tokens: Vec<Token>) -> Vec<Token> {
+        let mut result = Vec::new();
+        
+        for token in tokens {
+            if token.chunk_type == ChunkType::Text && token.text.contains(' ') {
+                // Split this token around spaces
+                let parts = self.split_token_on_spaces(&token);
+                result.extend(parts);
+            } else {
+                result.push(token);
+            }
+        }
+        
+        result
+    }
+
+    /// Split a single token on spaces, creating separate space tokens
+    fn split_token_on_spaces(&self, token: &Token) -> Vec<Token> {
+        let mut result = Vec::new();
+        let text = &token.text;
+        let mut current_start = 0;
+        let mut in_space = false;
+        let mut space_start = 0;
+        
+        for (i, c) in text.char_indices() {
+            let is_space = c == ' ' || c == '\n' || c == '\t' || c == '\r';
+            
+            if is_space && !in_space {
+                // Entering a space region - emit the preceding text if any
+                if i > current_start {
+                    let part_text = &text[current_start..i];
+                    let mut part_token = Token::with_text(
+                        part_text.to_string(),
+                        token.start + current_start,
+                        i - current_start,
+                        ChunkType::Text,
+                    );
+                    // Try to preserve syllables
+                    if !token.syls.is_empty() {
+                        part_token.syls = token.syls.iter()
+                            .filter(|s| part_text.contains(s.as_str()))
+                            .cloned()
+                            .collect();
+                    }
+                    result.push(part_token);
+                }
+                in_space = true;
+                space_start = i;
+            } else if !is_space && in_space {
+                // Leaving a space region - emit the space token
+                let space_text = &text[space_start..i];
+                result.push(Token::with_text(
+                    space_text.to_string(),
+                    token.start + space_start,
+                    i - space_start,
+                    ChunkType::Punct, // Treat space as punctuation
+                ));
+                in_space = false;
+                current_start = i;
+            }
+        }
+        
+        // Handle trailing content
+        if in_space {
+            // Ends with spaces
+            let space_text = &text[space_start..];
+            result.push(Token::with_text(
+                space_text.to_string(),
+                token.start + space_start,
+                text.len() - space_start,
+                ChunkType::Punct,
+            ));
+        } else if current_start < text.len() {
+            // Ends with text
+            let part_text = &text[current_start..];
+            let mut part_token = Token::with_text(
+                part_text.to_string(),
+                token.start + current_start,
+                text.len() - current_start,
+                ChunkType::Text,
+            );
+            if !token.syls.is_empty() {
+                part_token.syls = token.syls.iter()
+                    .filter(|s| part_text.contains(s.as_str()))
+                    .cloned()
+                    .collect();
+            }
+            result.push(part_token);
+        }
+        
+        result
     }
 
     /// Tokenize without post-processing (raw tokenization)
@@ -308,5 +417,40 @@ mod tests {
         
         // The tokenizer should handle both forms
         assert!(!tokens_nfc.is_empty());
+    }
+
+    #[test]
+    fn test_spaces_as_punct() {
+        let trie = make_test_trie();
+        let tokenizer = Tokenizer::new(trie);
+
+        // Without spaces_as_punct, spaces are part of tokens
+        let tokens_normal = tokenizer.tokenize_with_full_options("བཀྲ་ཤིས་ བདེ་ལེགས།", true, false);
+        
+        // With spaces_as_punct, spaces become separate punctuation tokens
+        let tokens_space = tokenizer.tokenize_with_full_options("བཀྲ་ཤིས་ བདེ་ལེགས།", true, true);
+        
+        // Should have more tokens when spaces are separate
+        assert!(tokens_space.len() >= tokens_normal.len());
+        
+        // Find the space token
+        let space_tokens: Vec<_> = tokens_space.iter()
+            .filter(|t| t.text.trim().is_empty() && t.chunk_type == ChunkType::Punct)
+            .collect();
+        assert!(!space_tokens.is_empty(), "Should have space as punctuation token");
+    }
+
+    #[test]
+    fn test_spaces_as_punct_with_newline() {
+        let trie = make_test_trie();
+        let tokenizer = Tokenizer::new(trie);
+
+        let tokens = tokenizer.tokenize_with_full_options("བཀྲ་ཤིས་ \nབདེ་ལེགས།", true, true);
+        
+        // Should have a space+newline token
+        let space_tokens: Vec<_> = tokens.iter()
+            .filter(|t| t.text.contains('\n') && t.chunk_type == ChunkType::Punct)
+            .collect();
+        assert!(!space_tokens.is_empty(), "Should have space+newline as punctuation token");
     }
 }

@@ -46,6 +46,7 @@
 pub mod char_categories;
 pub mod chunker;
 pub mod modifiers;
+pub mod sentence;
 pub mod syllable;
 pub mod token;
 pub mod tokenizer;
@@ -63,6 +64,7 @@ pub mod python;
 pub use char_categories::{get_char_category, BoString, CharCategory};
 pub use chunker::{Chunk, Chunker};
 pub use modifiers::{apply_all_modifiers, merge_dagdra, split_affixed, generate_default_lemmas};
+pub use sentence::{sentence_tokenize, paragraph_tokenize, Sentence, Paragraph};
 pub use syllable::{SylComponents, AffixData, is_dagdra, DAGDRA, TSEK};
 pub use token::{AffixationInfo, ChunkType, Sense, Token};
 pub use tokenizer::{SimpleTokenizer, Tokenizer};

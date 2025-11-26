@@ -439,3 +439,161 @@ fn test_backtracking_match() {
     assert_eq!(tokens[1].pos, Some("NO_POS".to_string()));
 }
 
+// =============================================================================
+// Edge Case Tests (from test_bugs.py)
+// =============================================================================
+
+#[test]
+fn test_many_tseks_in_syllable() {
+    // Test handling of syllables with multiple tseks and spaces
+    let input = " ཤི་བཀྲ་ཤིས་  བདེ་་ལ             ེ       གས་ བཀྲ་ཤིས་བདེ་ལེགས";
+    let chunker = Chunker::new(input);
+    let chunks = chunker.make_chunks();
+    
+    // Should produce chunks without crashing
+    assert!(!chunks.is_empty());
+}
+
+#[test]
+fn test_shad_in_syllable_edge_case() {
+    // Test punctuation handling with Latin text
+    let input = " tr བདེ་་ལེ གས། བཀྲ་";
+    let chunker = Chunker::new(input);
+    let chunks = chunker.make_chunks();
+    
+    // Should have Latin, Text, and Punct chunks
+    let has_latin = chunks.iter().any(|c| c.chunk_type == ChunkType::Latin);
+    let has_text = chunks.iter().any(|c| c.chunk_type == ChunkType::Text);
+    let has_punct = chunks.iter().any(|c| c.chunk_type == ChunkType::Punct);
+    
+    assert!(has_latin, "Should have Latin chunk");
+    assert!(has_text, "Should have Text chunk");
+    assert!(has_punct, "Should have Punct chunk");
+}
+
+#[test]
+fn test_spaces_as_punct() {
+    // Test the spaces_as_punct option
+    let tsv = r#"བཀྲ་ཤིས	NOUN			1000
+བདེ་ལེགས	NOUN			500"#;
+
+    let mut builder = TrieBuilder::new();
+    builder.load_tsv(tsv);
+    let trie = builder.build();
+
+    let tokenizer = Tokenizer::new(trie);
+    
+    // With spaces_as_punct=true
+    let tokens = tokenizer.tokenize_with_full_options("བཀྲ་ཤིས་ བདེ་ལེགས།", true, true);
+    
+    // Should have space as a separate punctuation token
+    let space_tokens: Vec<_> = tokens.iter()
+        .filter(|t| t.text.trim().is_empty() && t.chunk_type == ChunkType::Punct)
+        .collect();
+    
+    assert!(!space_tokens.is_empty(), "Should have space as punctuation token");
+}
+
+#[test]
+fn test_spaces_with_newline() {
+    let tsv = r#"བཀྲ་ཤིས	NOUN			1000"#;
+
+    let mut builder = TrieBuilder::new();
+    builder.load_tsv(tsv);
+    let trie = builder.build();
+
+    let tokenizer = Tokenizer::new(trie);
+    
+    // With spaces_as_punct=true and newline in text
+    let tokens = tokenizer.tokenize_with_full_options("བཀྲ་ཤིས་ \nབདེ་", true, true);
+    
+    // Should have space+newline as punctuation
+    let newline_tokens: Vec<_> = tokens.iter()
+        .filter(|t| t.text.contains('\n'))
+        .collect();
+    
+    assert!(!newline_tokens.is_empty(), "Should preserve newline");
+}
+
+// =============================================================================
+// Auto-Inflection Tests
+// =============================================================================
+
+#[test]
+fn test_trie_builder_with_inflection() {
+    let mut builder = TrieBuilder::with_inflection();
+    builder.load_tsv("བཀྲ་ཤིས\tNOUN\t\t\t1000");
+    let trie = builder.build();
+    
+    // Should have more than 1 entry (base + affixed forms)
+    assert!(trie.len() > 1, "Inflection should generate multiple entries");
+    
+    // Should have the base form
+    assert!(trie.has_word(&["བཀྲ", "ཤིས"]));
+    
+    // Should have affixed forms
+    assert!(trie.has_word(&["བཀྲ", "ཤིསར"]), "Should have la affix form");
+    assert!(trie.has_word(&["བཀྲ", "ཤིསའི"]), "Should have gi affix form");
+}
+
+#[test]
+fn test_trie_builder_without_inflection() {
+    let mut builder = TrieBuilder::new();
+    builder.load_tsv("བཀྲ་ཤིས\tNOUN\t\t\t1000");
+    let trie = builder.build();
+    
+    // Should have exactly 1 entry
+    assert_eq!(trie.len(), 1, "Without inflection should have only base form");
+}
+
+// =============================================================================
+// Sentence Tokenization Tests
+// =============================================================================
+
+#[test]
+fn test_sentence_tokenize_basic() {
+    use botok_rs::{sentence_tokenize, Token};
+    
+    // Create some test tokens
+    let mut tokens = vec![
+        Token::with_text("བཀྲ་ཤིས་".to_string(), 0, 12, ChunkType::Text),
+        Token::with_text("བདེ་ལེགས་".to_string(), 12, 12, ChunkType::Text),
+        Token::with_text("།".to_string(), 24, 3, ChunkType::Punct),
+        Token::with_text("ཡིན་".to_string(), 27, 6, ChunkType::Text),
+        Token::with_text("སོ་".to_string(), 33, 6, ChunkType::Text),
+        Token::with_text("།".to_string(), 39, 3, ChunkType::Punct),
+    ];
+    
+    // Add syllables and POS
+    tokens[0].syls = vec!["བཀྲ".to_string(), "ཤིས".to_string()];
+    tokens[0].pos = Some("NOUN".to_string());
+    tokens[1].syls = vec!["བདེ".to_string(), "ལེགས".to_string()];
+    tokens[1].pos = Some("NOUN".to_string());
+    tokens[3].syls = vec!["ཡིན".to_string()];
+    tokens[3].pos = Some("VERB".to_string());
+    tokens[4].syls = vec!["སོ".to_string()];
+    tokens[4].pos = Some("PART".to_string());
+    
+    let sentences = sentence_tokenize(&tokens);
+    
+    // Should produce at least one sentence
+    assert!(!sentences.is_empty(), "Should produce sentences");
+}
+
+#[test]
+fn test_paragraph_tokenize_basic() {
+    use botok_rs::{paragraph_tokenize, Token};
+    
+    // Create a simple token list
+    let tokens = vec![
+        Token::with_text("བཀྲ་ཤིས་".to_string(), 0, 12, ChunkType::Text),
+        Token::with_text("།".to_string(), 12, 3, ChunkType::Punct),
+    ];
+    
+    let paragraphs = paragraph_tokenize(&tokens);
+    
+    // Should produce at least one paragraph
+    assert!(!paragraphs.is_empty(), "Should produce paragraphs");
+    assert!(!paragraphs[0].sentences.is_empty(), "Paragraph should have sentences");
+}
+

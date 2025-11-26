@@ -250,15 +250,16 @@ impl PyWordTokenizer {
     /// Args:
     ///     text: The Tibetan text to tokenize
     ///     split_affixes: Whether to split affixed particles (default: True)
+    ///     spaces_as_punct: Whether to treat spaces as punctuation tokens (default: False)
     /// 
     /// Returns:
     ///     List of Token objects
-    #[pyo3(signature = (text, split_affixes=true))]
-    fn tokenize(&self, text: &str, split_affixes: bool) -> Vec<PyToken> {
+    #[pyo3(signature = (text, split_affixes=true, spaces_as_punct=false))]
+    fn tokenize(&self, text: &str, split_affixes: bool, spaces_as_punct: bool) -> Vec<PyToken> {
         // Use Arc::clone for cheap reference counting instead of cloning the whole trie
         let tokenizer = RustTokenizer::with_arc(Arc::clone(&self.trie));
         tokenizer
-            .tokenize_with_options(text, split_affixes)
+            .tokenize_with_full_options(text, split_affixes, spaces_as_punct)
             .into_iter()
             .map(PyToken::from)
             .collect()
@@ -567,6 +568,180 @@ fn get_default_base_path() -> String {
     dialect_pack::default_base_path().to_string_lossy().to_string()
 }
 
+/// A Python-compatible Sentence class
+#[pyclass(name = "Sentence")]
+#[derive(Clone)]
+pub struct PySentence {
+    #[pyo3(get)]
+    pub tokens: Vec<PyToken>,
+    #[pyo3(get)]
+    pub word_count: usize,
+    #[pyo3(get)]
+    pub start_idx: usize,
+    #[pyo3(get)]
+    pub end_idx: usize,
+}
+
+#[pymethods]
+impl PySentence {
+    /// Get the text of this sentence
+    fn text(&self) -> String {
+        self.tokens.iter().map(|t| t.text.as_str()).collect()
+    }
+
+    /// Get the normalized text of this sentence
+    fn normalized_text(&self) -> String {
+        let text = self.text();
+        text.replace("༑", "།")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Sentence(words={}, text='{}')", self.word_count, self.text())
+    }
+
+    fn __len__(&self) -> usize {
+        self.tokens.len()
+    }
+}
+
+/// A Python-compatible Paragraph class
+#[pyclass(name = "Paragraph")]
+#[derive(Clone)]
+pub struct PyParagraph {
+    #[pyo3(get)]
+    pub sentences: Vec<PySentence>,
+    #[pyo3(get)]
+    pub word_count: usize,
+}
+
+#[pymethods]
+impl PyParagraph {
+    /// Get the text of this paragraph
+    fn text(&self) -> String {
+        self.sentences.iter().map(|s| s.text()).collect()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Paragraph(sentences={}, words={})", self.sentences.len(), self.word_count)
+    }
+
+    fn __len__(&self) -> usize {
+        self.sentences.len()
+    }
+}
+
+/// Tokenize word tokens into sentences
+/// 
+/// Args:
+///     tokens: List of Token objects from WordTokenizer
+/// 
+/// Returns:
+///     List of Sentence objects
+#[pyfunction]
+fn sentence_tokenize(tokens: Vec<PyToken>) -> Vec<PySentence> {
+    use crate::sentence::sentence_tokenize as rust_sentence_tokenize;
+    use crate::token::Token as RustToken;
+
+    // Convert PyTokens to RustTokens
+    let rust_tokens: Vec<RustToken> = tokens.iter().map(|t| {
+        let mut token = RustToken::with_text(
+            t.text.clone(),
+            t.start,
+            t.len,
+            match t.chunk_type.as_str() {
+                "TEXT" => crate::token::ChunkType::Text,
+                "PUNCT" => crate::token::ChunkType::Punct,
+                "NUM" => crate::token::ChunkType::Num,
+                "SYM" => crate::token::ChunkType::Sym,
+                "LATIN" => crate::token::ChunkType::Latin,
+                "CJK" => crate::token::ChunkType::Cjk,
+                _ => crate::token::ChunkType::Other,
+            },
+        );
+        token.pos = t.pos.clone();
+        token.lemma = t.lemma.clone();
+        token.freq = t.freq;
+        token.syls = t.syls.clone();
+        token.is_affix = t.is_affix;
+        token.is_affix_host = t.is_affix_host;
+        token.is_skrt = t.is_skrt;
+        token
+    }).collect();
+
+    // Call the Rust sentence tokenizer
+    let sentences = rust_sentence_tokenize(&rust_tokens);
+
+    // Convert back to Python types
+    sentences.into_iter().map(|s| {
+        PySentence {
+            tokens: s.tokens.into_iter().map(PyToken::from).collect(),
+            word_count: s.word_count,
+            start_idx: s.start_idx,
+            end_idx: s.end_idx,
+        }
+    }).collect()
+}
+
+/// Tokenize word tokens into paragraphs
+/// 
+/// Args:
+///     tokens: List of Token objects from WordTokenizer
+/// 
+/// Returns:
+///     List of Paragraph objects
+#[pyfunction]
+fn paragraph_tokenize(tokens: Vec<PyToken>) -> Vec<PyParagraph> {
+    use crate::sentence::paragraph_tokenize as rust_paragraph_tokenize;
+    use crate::token::Token as RustToken;
+
+    // Convert PyTokens to RustTokens
+    let rust_tokens: Vec<RustToken> = tokens.iter().map(|t| {
+        let mut token = RustToken::with_text(
+            t.text.clone(),
+            t.start,
+            t.len,
+            match t.chunk_type.as_str() {
+                "TEXT" => crate::token::ChunkType::Text,
+                "PUNCT" => crate::token::ChunkType::Punct,
+                "NUM" => crate::token::ChunkType::Num,
+                "SYM" => crate::token::ChunkType::Sym,
+                "LATIN" => crate::token::ChunkType::Latin,
+                "CJK" => crate::token::ChunkType::Cjk,
+                _ => crate::token::ChunkType::Other,
+            },
+        );
+        token.pos = t.pos.clone();
+        token.lemma = t.lemma.clone();
+        token.freq = t.freq;
+        token.syls = t.syls.clone();
+        token.is_affix = t.is_affix;
+        token.is_affix_host = t.is_affix_host;
+        token.is_skrt = t.is_skrt;
+        token
+    }).collect();
+
+    // Call the Rust paragraph tokenizer
+    let paragraphs = rust_paragraph_tokenize(&rust_tokens);
+
+    // Convert back to Python types
+    paragraphs.into_iter().map(|p| {
+        PyParagraph {
+            sentences: p.sentences.into_iter().map(|s| {
+                PySentence {
+                    tokens: s.tokens.into_iter().map(PyToken::from).collect(),
+                    word_count: s.word_count,
+                    start_idx: s.start_idx,
+                    end_idx: s.end_idx,
+                }
+            }).collect(),
+            word_count: p.word_count,
+        }
+    }).collect()
+}
+
 /// Create the Python module
 #[pymodule]
 fn botok_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -575,9 +750,13 @@ fn botok_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PySimpleTokenizer>()?;
     m.add_class::<PyTrie>()?;
     m.add_class::<PyTrieBuilder>()?;
+    m.add_class::<PySentence>()?;
+    m.add_class::<PyParagraph>()?;
     m.add_function(wrap_pyfunction!(chunk, m)?)?;
     m.add_function(wrap_pyfunction!(get_syls, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_simple, m)?)?;
+    m.add_function(wrap_pyfunction!(sentence_tokenize, m)?)?;
+    m.add_function(wrap_pyfunction!(paragraph_tokenize, m)?)?;
     
     // Dialect pack functions (only available with download feature)
     #[cfg(feature = "download")]

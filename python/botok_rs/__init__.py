@@ -53,10 +53,14 @@ from .botok_rs import (
     SimpleTokenizer,
     Trie,
     TrieBuilder,
+    Sentence,
+    Paragraph,
     # Functions
     chunk,
     get_syls,
     tokenize_simple,
+    sentence_tokenize,
+    paragraph_tokenize,
     # Dialect pack functions
     download_dialect_pack,
     get_dialect_pack_path,
@@ -73,10 +77,14 @@ __all__ = [
     "SimpleTokenizer",
     "Trie",
     "TrieBuilder",
+    "Sentence",
+    "Paragraph",
     # Functions
     "chunk",
     "get_syls",
     "tokenize_simple",
+    "sentence_tokenize",
+    "paragraph_tokenize",
     # Dialect pack functions
     "download_dialect_pack",
     "get_dialect_pack_path",
