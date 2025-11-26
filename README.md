@@ -44,23 +44,54 @@ The binary will be at `target/release/botok`.
 ### Python
 
 ```python
-from botok_rs import SimpleTokenizer, WordTokenizer, chunk, get_syls
+from botok_rs import WordTokenizer
+
+# Just works! Auto-downloads dialect pack on first use
+wt = WordTokenizer()  # Downloads "general" dialect pack automatically
+tokens = wt.tokenize("བཀྲ་ཤིས་བདེ་ལེགས།")
+for t in tokens:
+    print(f"{t.text}: {t.pos}")
+# བཀྲ་ཤིས་: NOUN
+# བདེ་ལེགས: NOUN
+# །: None
+```
+
+### Dialect Pack Management
+
+```python
+from botok_rs import (
+    WordTokenizer, 
+    download_dialect_pack, 
+    dialect_pack_exists,
+    get_default_base_path
+)
+
+# Check where dialect packs are stored
+print(get_default_base_path())
+# ~/Documents/botok-rs/dialect_packs/
+
+# Check if a dialect pack exists locally
+if not dialect_pack_exists("general"):
+    download_dialect_pack("general")
+
+# Use a specific dialect pack
+wt = WordTokenizer(dialect_name="general")
+
+# Disable auto-download for manual dictionary management
+wt = WordTokenizer(auto_download=False)
+wt.load_tsv_file("my_dictionary.tsv")
+wt.add_word("བཀྲ་ཤིས", pos="NOUN")
+```
+
+### Simple Tokenization (No Dictionary)
+
+```python
+from botok_rs import SimpleTokenizer, chunk, get_syls
 
 # Simple syllable tokenization (no dictionary)
 tokens = SimpleTokenizer.tokenize("བཀྲ་ཤིས་བདེ་ལེགས།")
 for t in tokens:
     print(f"{t.text} ({t.chunk_type})")
-
-# Dictionary-based tokenization
-wt = WordTokenizer()
-wt.load_tsv_file("dictionary.tsv")  # Load from file
-# or
-wt.add_word("བཀྲ་ཤིས", pos="NOUN")  # Add words manually
-wt.add_word("བདེ་ལེགས", pos="NOUN")
-
-tokens = wt.tokenize("བཀྲ་ཤིས་བདེ་ལེགས།")
-for t in tokens:
-    print(f"{t.text}: {t.pos}")
 
 # Get syllables
 syls = get_syls("བཀྲ་ཤིས་བདེ་ལེགས")

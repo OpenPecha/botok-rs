@@ -206,6 +206,36 @@ impl Trie {
     pub fn root(&self) -> &TrieNode {
         &self.root
     }
+
+    /// Merge another trie into this one
+    pub fn merge(&mut self, other: &Trie) {
+        let added = Self::merge_nodes_recursive(&mut self.root, &other.root);
+        self.word_count += added;
+    }
+
+    fn merge_nodes_recursive(target: &mut TrieNode, source: &TrieNode) -> usize {
+        let mut added = 0;
+        
+        for (syl, source_child) in &source.children {
+            let target_child = target.children
+                .entry(syl.clone())
+                .or_insert_with(TrieNode::new);
+            
+            if source_child.is_leaf && !target_child.is_leaf {
+                target_child.is_leaf = true;
+                added += 1;
+            }
+            
+            if source_child.is_leaf && source_child.data.is_some() {
+                target_child.data = source_child.data.clone();
+            }
+            
+            // Recursively merge children
+            added += Self::merge_nodes_recursive(target_child, source_child);
+        }
+        
+        added
+    }
 }
 
 /// Builder for loading a Trie from TSV files

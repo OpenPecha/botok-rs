@@ -10,6 +10,9 @@ use crate::token::{ChunkType, Token as RustToken};
 use crate::tokenizer::{SimpleTokenizer as RustSimpleTokenizer, Tokenizer as RustTokenizer};
 use crate::trie::{Trie, TrieBuilder, WordData};
 
+#[cfg(feature = "download")]
+use crate::dialect_pack;
+
 /// A Python-compatible Token class
 #[pyclass(name = "Token")]
 #[derive(Clone)]
@@ -113,12 +116,12 @@ impl PyToken {
 /// Word Tokenizer - the main tokenizer class
 /// 
 /// This provides dictionary-based tokenization using longest-match.
+/// By default, it automatically downloads the dialect pack on first use.
 /// 
 /// Example:
 ///     >>> from botok_rs import WordTokenizer
-///     >>> wt = WordTokenizer()
-///     >>> wt.load_tsv("བཀྲ་ཤིས\\tNOUN\\t\\t\\t1000")
-///     >>> tokens = wt.tokenize("བཀྲ་ཤིས།")
+///     >>> wt = WordTokenizer()  # Auto-downloads dialect pack
+///     >>> tokens = wt.tokenize("བཀྲ་ཤིས་བདེ་ལེགས།")
 ///     >>> for t in tokens:
 ///     ...     print(t.text, t.pos)
 #[pyclass(name = "WordTokenizer")]
@@ -128,9 +131,43 @@ pub struct PyWordTokenizer {
 
 #[pymethods]
 impl PyWordTokenizer {
+    /// Create a new WordTokenizer.
+    /// 
+    /// Args:
+    ///     dialect_name: Name of the dialect pack to use (default: "general")
+    ///     base_path: Base path for dialect packs (default: ~/Documents/botok-rs/dialect_packs/)
+    ///     auto_download: Whether to automatically download the dialect pack (default: True)
+    /// 
+    /// If auto_download is True and the dialect pack is not found locally,
+    /// it will be downloaded from GitHub automatically.
     #[new]
-    fn new() -> Self {
-        PyWordTokenizer { trie: Trie::new() }
+    #[pyo3(signature = (dialect_name=None, base_path=None, auto_download=true))]
+    fn new(dialect_name: Option<&str>, base_path: Option<&str>, auto_download: bool) -> PyResult<Self> {
+        let mut tokenizer = PyWordTokenizer { trie: Trie::new() };
+        
+        #[cfg(feature = "download")]
+        if auto_download {
+            let dialect = dialect_name.unwrap_or(dialect_pack::DEFAULT_DIALECT_PACK);
+            let base = base_path.map(std::path::Path::new);
+            
+            // Download dialect pack if needed
+            let pack_path = dialect_pack::get_dialect_pack(dialect, base)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+            
+            // Load all dictionary files
+            let dict_files = dialect_pack::list_dictionary_files(&pack_path)
+                .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+            
+            let mut builder = TrieBuilder::new();
+            for file in dict_files {
+                if let Ok(content) = std::fs::read_to_string(&file) {
+                    builder.load_tsv(&content);
+                }
+            }
+            tokenizer.trie = builder.build();
+        }
+        
+        Ok(tokenizer)
     }
 
     /// Load words from a TSV string
@@ -140,7 +177,9 @@ impl PyWordTokenizer {
     fn load_tsv(&mut self, tsv_content: &str) {
         let mut builder = TrieBuilder::new();
         builder.load_tsv(tsv_content);
-        self.trie = builder.build();
+        // Merge with existing trie
+        let new_trie = builder.build();
+        self.trie.merge(&new_trie);
     }
 
     /// Load words from a TSV file
@@ -148,6 +187,35 @@ impl PyWordTokenizer {
         let content = std::fs::read_to_string(path)
             .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
         self.load_tsv(&content);
+        Ok(())
+    }
+
+    /// Load a dialect pack by name
+    /// 
+    /// Args:
+    ///     dialect_name: Name of the dialect pack (e.g., "general")
+    ///     base_path: Base path for dialect packs (optional)
+    /// 
+    /// This will download the dialect pack if not already present.
+    #[cfg(feature = "download")]
+    #[pyo3(signature = (dialect_name, base_path=None))]
+    fn load_dialect_pack(&mut self, dialect_name: &str, base_path: Option<&str>) -> PyResult<()> {
+        let base = base_path.map(std::path::Path::new);
+        
+        let pack_path = dialect_pack::get_dialect_pack(dialect_name, base)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+        
+        let dict_files = dialect_pack::list_dictionary_files(&pack_path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+        
+        let mut builder = TrieBuilder::new();
+        for file in dict_files {
+            if let Ok(content) = std::fs::read_to_string(&file) {
+                builder.load_tsv(&content);
+            }
+        }
+        self.trie = builder.build();
+        
         Ok(())
     }
 
@@ -299,6 +367,76 @@ fn tokenize_simple(text: &str) -> Vec<PyToken> {
     PySimpleTokenizer::tokenize(text)
 }
 
+/// Download a dialect pack from GitHub
+/// 
+/// Args:
+///     dialect_name: Name of the dialect pack (default: "general")
+///     base_path: Base path for dialect packs (optional)
+///     version: Specific version to download (optional, defaults to latest)
+/// 
+/// Returns:
+///     Path to the downloaded dialect pack
+#[cfg(feature = "download")]
+#[pyfunction]
+#[pyo3(signature = (dialect_name=None, base_path=None, version=None))]
+fn download_dialect_pack(
+    dialect_name: Option<&str>,
+    base_path: Option<&str>,
+    version: Option<&str>,
+) -> PyResult<String> {
+    let dialect = dialect_name.unwrap_or(dialect_pack::DEFAULT_DIALECT_PACK);
+    let base = base_path.map(std::path::Path::new);
+    
+    let path = dialect_pack::download_dialect_pack(dialect, base, version)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e.to_string()))?;
+    
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// Get the path to a dialect pack
+/// 
+/// Args:
+///     dialect_name: Name of the dialect pack (default: "general")
+///     base_path: Base path for dialect packs (optional)
+/// 
+/// Returns:
+///     Path to the dialect pack directory
+#[cfg(feature = "download")]
+#[pyfunction]
+#[pyo3(signature = (dialect_name=None, base_path=None))]
+fn get_dialect_pack_path(dialect_name: Option<&str>, base_path: Option<&str>) -> String {
+    let dialect = dialect_name.unwrap_or(dialect_pack::DEFAULT_DIALECT_PACK);
+    let base = base_path.map(std::path::Path::new);
+    dialect_pack::dialect_pack_path(dialect, base).to_string_lossy().to_string()
+}
+
+/// Check if a dialect pack exists locally
+/// 
+/// Args:
+///     dialect_name: Name of the dialect pack (default: "general")
+///     base_path: Base path for dialect packs (optional)
+/// 
+/// Returns:
+///     True if the dialect pack exists locally
+#[cfg(feature = "download")]
+#[pyfunction]
+#[pyo3(signature = (dialect_name=None, base_path=None))]
+fn dialect_pack_exists(dialect_name: Option<&str>, base_path: Option<&str>) -> bool {
+    let dialect = dialect_name.unwrap_or(dialect_pack::DEFAULT_DIALECT_PACK);
+    let base = base_path.map(std::path::Path::new);
+    dialect_pack::dialect_pack_exists(dialect, base)
+}
+
+/// Get the default base path for dialect packs
+/// 
+/// Returns:
+///     Default path where dialect packs are stored (~/Documents/botok-rs/dialect_packs/)
+#[cfg(feature = "download")]
+#[pyfunction]
+fn get_default_base_path() -> String {
+    dialect_pack::default_base_path().to_string_lossy().to_string()
+}
+
 /// Create the Python module
 #[pymodule]
 fn botok_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -308,6 +446,15 @@ fn botok_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(chunk, m)?)?;
     m.add_function(wrap_pyfunction!(get_syls, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_simple, m)?)?;
+    
+    // Dialect pack functions (only available with download feature)
+    #[cfg(feature = "download")]
+    {
+        m.add_function(wrap_pyfunction!(download_dialect_pack, m)?)?;
+        m.add_function(wrap_pyfunction!(get_dialect_pack_path, m)?)?;
+        m.add_function(wrap_pyfunction!(dialect_pack_exists, m)?)?;
+        m.add_function(wrap_pyfunction!(get_default_base_path, m)?)?;
+    }
 
     // Add version
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;

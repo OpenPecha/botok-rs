@@ -49,6 +49,10 @@ pub mod token;
 pub mod tokenizer;
 pub mod trie;
 
+// Dialect pack downloading (only compiled when the "download" feature is enabled)
+#[cfg(feature = "download")]
+pub mod dialect_pack;
+
 // Python bindings (only compiled when the "python" feature is enabled)
 #[cfg(feature = "python")]
 pub mod python;
@@ -59,6 +63,14 @@ pub use chunker::{Chunk, Chunker};
 pub use token::{ChunkType, Sense, Token};
 pub use tokenizer::{SimpleTokenizer, Tokenizer};
 pub use trie::{AffixInfo, Trie, TrieBuilder, TrieNode, WordData};
+
+// Re-export dialect pack functions when available
+#[cfg(feature = "download")]
+pub use dialect_pack::{
+    get_dialect_pack, get_default_dialect_pack, download_dialect_pack,
+    dialect_pack_path, dialect_pack_exists, list_dictionary_files,
+    default_base_path, DialectPackError, DEFAULT_DIALECT_PACK,
+};
 
 /// Version of the library
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
