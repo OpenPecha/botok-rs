@@ -2,7 +2,14 @@
 //!
 //! The Trie stores words (as sequences of syllables) and allows for efficient
 //! longest-match lookups during tokenization.
+//!
+//! ## Auto-Inflection
+//! 
+//! When loading words from TSV files, the `TrieBuilder` can automatically generate
+//! all affixed forms of each word. This is essential for Tibetan NLP since Tibetan
+//! has productive affixation (particles like འི, ས, ར, etc. attach to words).
 
+use crate::syllable::{AffixData, SylComponents};
 use crate::token::Sense;
 use std::collections::HashMap;
 
@@ -28,7 +35,9 @@ pub struct WordData {
 pub struct AffixInfo {
     /// Length of the affix in characters
     pub len: usize,
-    /// Whether 'aa' (འ) is added
+    /// Type of affix (e.g., "la", "gis", "gi", etc.)
+    pub affix_type: String,
+    /// Whether 'aa' (འ) was removed before adding the affix
     pub aa: bool,
 }
 
@@ -115,6 +124,84 @@ impl Trie {
         
         if !syls.is_empty() {
             self.add(&syls, data);
+        }
+    }
+
+    /// Add a word and return a mutable reference to the node for further modification.
+    /// This avoids double traversal when you need to add data after adding the word.
+    pub fn add_word_and_get_node(&mut self, word: &str, data: Option<WordData>) -> Option<&mut TrieNode> {
+        let syls: Vec<&str> = word
+            .split('་')
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        if syls.is_empty() {
+            return None;
+        }
+
+        let mut current = &mut self.root;
+
+        for syl in &syls {
+            current = current
+                .children
+                .entry(syl.to_string())
+                .or_insert_with(TrieNode::new);
+        }
+
+        if !current.is_leaf {
+            self.word_count += 1;
+        }
+        current.is_leaf = true;
+
+        if let Some(d) = data {
+            current.data = Some(d);
+        }
+
+        Some(current)
+    }
+
+    /// Add a word with sense data in a single traversal (optimized for TSV loading)
+    pub fn add_word_with_sense(&mut self, word: &str, data: WordData, sense: Sense) {
+        let syls: Vec<&str> = word
+            .split('་')
+            .filter(|s| !s.is_empty())
+            .collect();
+        
+        if syls.is_empty() {
+            return;
+        }
+
+        let mut current = &mut self.root;
+
+        for syl in &syls {
+            current = current
+                .children
+                .entry(syl.to_string())
+                .or_insert_with(TrieNode::new);
+        }
+
+        if !current.is_leaf {
+            self.word_count += 1;
+        }
+        current.is_leaf = true;
+
+        // Merge data and sense in one operation
+        if let Some(ref mut existing_data) = current.data {
+            // Update existing data if needed
+            if existing_data.pos.is_none() && data.pos.is_some() {
+                existing_data.pos = data.pos;
+            }
+            if existing_data.lemma.is_none() && data.lemma.is_some() {
+                existing_data.lemma = data.lemma;
+            }
+            if existing_data.freq.is_none() && data.freq.is_some() {
+                existing_data.freq = data.freq;
+            }
+            existing_data.senses.push(sense);
+        } else {
+            let mut new_data = data;
+            new_data.senses.push(sense);
+            current.data = Some(new_data);
         }
     }
 
@@ -239,17 +326,89 @@ impl Trie {
 }
 
 /// Builder for loading a Trie from TSV files
+/// 
+/// Supports auto-inflection: when `inflect` is enabled, all affixed forms
+/// of each word are automatically generated and added to the trie.
 pub struct TrieBuilder {
     trie: Trie,
+    /// Syllable components for inflection
+    syl_components: SylComponents,
+    /// Whether to auto-generate inflected forms
+    inflect: bool,
+    /// Cache for inflected forms to avoid recomputation
+    inflection_cache: HashMap<String, Vec<(Vec<String>, Option<AffixData>)>>,
 }
 
 impl TrieBuilder {
-    /// Create a new builder
+    /// Create a new builder with inflection disabled
     pub fn new() -> Self {
-        TrieBuilder { trie: Trie::new() }
+        TrieBuilder { 
+            trie: Trie::new(),
+            syl_components: SylComponents::new(),
+            inflect: false,
+            inflection_cache: HashMap::new(),
+        }
+    }
+
+    /// Create a new builder with inflection enabled
+    pub fn with_inflection() -> Self {
+        TrieBuilder {
+            trie: Trie::new(),
+            syl_components: SylComponents::new(),
+            inflect: true,
+            inflection_cache: HashMap::new(),
+        }
+    }
+
+    /// Enable or disable auto-inflection
+    pub fn set_inflection(&mut self, enable: bool) -> &mut Self {
+        self.inflect = enable;
+        self
+    }
+
+    /// Get all inflected forms of a word
+    /// 
+    /// Returns a list of (syllables, affix_data) tuples.
+    /// The first element is always the base form with None affix_data.
+    fn get_inflected(&mut self, word: &str) -> Vec<(Vec<String>, Option<AffixData>)> {
+        // Check cache first
+        if let Some(cached) = self.inflection_cache.get(word) {
+            return cached.clone();
+        }
+
+        let syls: Vec<String> = word
+            .split('་')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        if syls.is_empty() {
+            return vec![];
+        }
+
+        // Start with the base form
+        let mut inflected = vec![(syls.clone(), None)];
+
+        // Get affixed forms of the last syllable
+        if let Some(last_syl) = syls.last() {
+            if let Some(affixed) = self.syl_components.get_all_affixed(last_syl) {
+                for (affixed_syl, affix_data) in affixed {
+                    let mut inflected_word = syls[..syls.len() - 1].to_vec();
+                    inflected_word.push(affixed_syl);
+                    inflected.push((inflected_word, Some(affix_data)));
+                }
+            }
+        }
+
+        // Cache the result
+        self.inflection_cache.insert(word.to_string(), inflected.clone());
+        inflected
     }
 
     /// Load words from a TSV string (format: form\tpos\tlemma\tsense\tfreq)
+    /// 
+    /// If inflection is enabled, automatically generates all affixed forms.
+    /// Uses single-traversal optimization to avoid double trie walks.
     pub fn load_tsv(&mut self, tsv_content: &str) {
         for line in tsv_content.lines() {
             // Skip comments and empty lines
@@ -265,54 +424,120 @@ impl TrieBuilder {
 
             let form = parts[0];
             let pos = parts.get(1).and_then(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                }
+                if s.is_empty() { None } else { Some(s.to_string()) }
             });
             let lemma = parts.get(2).and_then(|s| {
-                if s.is_empty() {
-                    None
-                } else {
-                    Some(s.to_string())
-                }
+                if s.is_empty() { None } else { Some(s.to_string()) }
             });
-            let _sense = parts.get(3); // Currently unused
-            let freq = parts
-                .get(4)
-                .and_then(|s| s.trim().parse::<u32>().ok());
+            let sense_text = parts.get(3).and_then(|s| {
+                if s.is_empty() { None } else { Some(s.to_string()) }
+            });
+            let freq = parts.get(4).and_then(|s| s.trim().parse::<u32>().ok());
 
-            let data = WordData {
-                pos: pos.clone(),
-                lemma,
-                freq,
-                ..Default::default()
-            };
+            if self.inflect {
+                // Get all inflected forms
+                let inflected = self.get_inflected(form);
+                
+                for (syls, affix_data) in inflected {
+                    let is_affixed = affix_data.is_some();
+                    
+                    // Build word data
+                    let data = WordData {
+                        pos: pos.clone(),
+                        lemma: lemma.clone(),
+                        freq,
+                        affixation: affix_data.map(|a| AffixInfo {
+                            len: a.len,
+                            affix_type: a.affix_type,
+                            aa: a.aa,
+                        }),
+                        ..Default::default()
+                    };
 
-            // Add the sense
-            let sense = Sense {
-                pos,
-                freq,
-                ..Default::default()
-            };
+                    // Build sense
+                    let sense = Sense {
+                        pos: pos.clone(),
+                        freq,
+                        sense: sense_text.clone(),
+                        affixed: is_affixed,
+                        ..Default::default()
+                    };
 
-            self.trie.add_word(form, Some(data));
-            
-            // Split into syllables and add sense
-            let syls: Vec<&str> = form
-                .split('་')
-                .filter(|s| !s.is_empty())
-                .collect();
-            if !syls.is_empty() {
-                self.trie.add_data(&syls, sense);
+                    // Add word with sense in single traversal
+                    let word = syls.join("་");
+                    self.trie.add_word_with_sense(&word, data, sense);
+                }
+            } else {
+                // Non-inflected mode: just add the word as-is
+                let data = WordData {
+                    pos: pos.clone(),
+                    lemma: lemma.clone(),
+                    freq,
+                    ..Default::default()
+                };
+
+                let sense = Sense {
+                    pos: pos.clone(),
+                    freq,
+                    sense: sense_text.clone(),
+                    ..Default::default()
+                };
+
+                // Single traversal: add word with sense together
+                self.trie.add_word_with_sense(form, data, sense);
             }
+        }
+    }
+
+    /// Add a word with all its inflected forms (for dynamic word addition)
+    pub fn add_inflected_word(&mut self, word: &str, data: Option<WordData>) {
+        if self.inflect {
+            let inflected = self.get_inflected(word);
+            
+            for (syls, affix_data) in inflected {
+                let mut word_data = data.clone().unwrap_or_default();
+                word_data.affixation = affix_data.map(|a| AffixInfo {
+                    len: a.len,
+                    affix_type: a.affix_type,
+                    aa: a.aa,
+                });
+                
+                let word_str = syls.join("་");
+                self.trie.add_word(&word_str, Some(word_data));
+            }
+        } else {
+            self.trie.add_word(word, data);
+        }
+    }
+
+    /// Deactivate a word and all its inflected forms
+    pub fn deactivate_inflected_word(&mut self, word: &str) {
+        if self.inflect {
+            let inflected = self.get_inflected(word);
+            
+            for (syls, _) in inflected {
+                let syls_ref: Vec<&str> = syls.iter().map(|s| s.as_str()).collect();
+                self.trie.deactivate(&syls_ref);
+            }
+        } else {
+            let syls: Vec<&str> = word.split('་').filter(|s| !s.is_empty()).collect();
+            self.trie.deactivate(&syls);
         }
     }
 
     /// Build and return the Trie
     pub fn build(self) -> Trie {
         self.trie
+    }
+    
+    /// Get a reference to the underlying trie (for inspection)
+    pub fn trie(&self) -> &Trie {
+        &self.trie
+    }
+    
+    /// Get a mutable reference to the underlying trie (for advanced usage)
+    pub fn trie_mut(&mut self) -> &mut Trie {
+        &mut self.trie
     }
 }
 

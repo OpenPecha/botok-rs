@@ -16,9 +16,7 @@ pub fn split_affixed(tokens: &mut Vec<Token>) {
         // Check if this token has affixation info and should be split
         if let Some(ref affixation) = tokens[i].affixation {
             // Check that there's no sense that explicitly says "affixed: false"
-            let should_split = !tokens[i].senses.iter().any(|s| {
-                s.affixed == Some(false)
-            });
+            let should_split = !tokens[i].senses.iter().any(|s| !s.affixed);
 
             if should_split && tokens[i].syls.len() > 1 {
                 let affix_len = affixation.len;

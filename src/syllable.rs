@@ -4,7 +4,6 @@
 //! all possible affixed forms of a word.
 
 use once_cell::sync::Lazy;
-use regex::Regex;
 use std::collections::{HashMap, HashSet};
 
 /// Information about an affix
@@ -35,8 +34,38 @@ static AFFIXES: Lazy<HashMap<&'static str, (usize, &'static str)>> = Lazy::new(|
     m
 });
 
-/// Endings that indicate a syllable is NOT affixable
-static NON_AFFIXABLE_ENDINGS: &[&str] = &["ར", "ས", "འི", "འོ", "མ", "ང"];
+/// Affixes that indicate a syllable is already affixed (NOT affixable)
+/// These are the grammatical particle suffixes, not syllable-internal suffixes
+static AFFIX_PARTICLES: &[&str] = &[
+    "འི",   // genitive
+    "འོ",   // terminative
+    "འམ",   // alternative
+    "འང",   // concessive
+    "འིའོ", // genitive + terminative
+    "འིའམ", // genitive + alternative
+    "འིའང", // genitive + concessive
+    "འོའམ", // terminative + alternative
+    "འོའང", // terminative + concessive
+];
+
+/// Suffixes that indicate a syllable can potentially take affixes
+/// These are the valid Tibetan syllable-final suffixes that can host particles
+static AFFIXABLE_SUFFIXES: Lazy<HashSet<&'static str>> = Lazy::new(|| {
+    let suffixes = [
+        // Basic suffixes that can take affixes
+        "འ", "ག", "ང", "ད", "ན", "བ", "མ", "ལ",
+        // With vowels
+        "ིག", "ིང", "ིད", "ིན", "ིབ", "ིམ", "ིལ", "ིས",
+        "ུག", "ུང", "ུད", "ུན", "ུབ", "ུམ", "ུལ", "ུས",
+        "ེག", "ེང", "ེད", "ེན", "ེབ", "ེམ", "ེལ", "ེས",
+        "ོག", "ོང", "ོད", "ོན", "ོབ", "ོམ", "ོལ", "ོས",
+        // Just vowels (open syllables)
+        "ི", "ུ", "ེ", "ོ",
+        // Standalone consonant suffixes
+        "ས", "ར",
+    ];
+    suffixes.iter().copied().collect()
+});
 
 /// Dagdra particles (pa/po/ba/bo)
 pub static DAGDRA: &[&str] = &["པ་", "པོ་", "བ་", "བོ་"];
@@ -46,13 +75,8 @@ pub const TSEK: char = '་';
 
 /// Syllable components for determining if a syllable is affixable
 pub struct SylComponents {
-    /// Roots that can take affixes (simplified set)
+    /// Roots that can take affixes
     roots: HashSet<String>,
-    /// Suffixes (used for syllable analysis)
-    #[allow(dead_code)]
-    suffixes: HashSet<String>,
-    /// Regex for thame detection
-    thame_regex: Regex,
 }
 
 impl Default for SylComponents {
@@ -64,26 +88,12 @@ impl Default for SylComponents {
 impl SylComponents {
     /// Create a new SylComponents with default data
     pub fn new() -> Self {
-        // Load a simplified set of roots - in production, load from SylComponents.json
         let roots = Self::load_default_roots();
-        let suffixes = Self::load_default_suffixes();
-        
-        // Regex pattern for thame (affixable syllables)
-        // Matches syllables that can host affixed particles
-        let thame_regex = Regex::new(
-            r"([ྱྲླྭྷ]?[ིེོུ]?(འ?[ིོུ]?ར?ས?|(འ[མང])|(འོའ[མང])|(འིའ[ོམང])))$"
-        ).expect("Invalid regex");
-
-        SylComponents {
-            roots,
-            suffixes,
-            thame_regex,
-        }
+        SylComponents { roots }
     }
 
     fn load_default_roots() -> HashSet<String> {
-        // Common Tibetan roots - this is a simplified set
-        // In production, load from SylComponents.json
+        // Load roots from data file
         let roots_str = include_str!("data/roots.txt");
         roots_str.lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -91,42 +101,52 @@ impl SylComponents {
             .collect()
     }
 
-    fn load_default_suffixes() -> HashSet<String> {
-        let suffixes = [
-            "འ", "ག", "གས", "ང", "ངས", "ད", "ན", "བ", "བས", "མ", "མས", "ལ",
-            "འི", "འོ", "འང", "འམ", "ར", "ས", "འིའོ", "འིའམ", "འིའང", "འོའམ", "འོའང",
-            "ི", "ིག", "ིགས", "ིང", "ིངས", "ིད", "ིན", "ིབ", "ིབས", "ིམ", "ིམས", "ིལ",
-            "ིའི", "ིའོ", "ིའང", "ིའམ", "ིར", "ིས",
-            "ུ", "ུག", "ུགས", "ུང", "ུངས", "ུད", "ུན", "ུབ", "ུབས", "ུམ", "ུམས", "ུལ",
-            "ུའི", "ུའོ", "ུའང", "ུའམ", "ུར", "ུས",
-            "ེ", "ེག", "ེགས", "ེང", "ེངས", "ེད", "ེན", "ེབ", "ེབས", "ེམ", "ེམས", "ེལ",
-            "ེའི", "ེའོ", "ེའང", "ེའམ", "ེར", "ེས",
-            "ོ", "ོག", "ོགས", "ོང", "ོངས", "ོད", "ོན", "ོབ", "ོབས", "ོམ", "ོམས", "ོལ",
-            "ོའི", "ོའོ", "ོའང", "ོའམ", "ོར", "ོས",
-        ];
-        suffixes.iter().map(|s| s.to_string()).collect()
-    }
-
     /// Check if a syllable is affixable (can take particle affixes)
+    /// 
+    /// A syllable is affixable if:
+    /// 1. It's not already affixed (doesn't end with འི, འོ, འམ, འང, etc.)
+    /// 2. It ends with a valid suffix that can host affixes
     pub fn is_affixable(&self, syl: &str) -> bool {
-        if !self.is_thame(syl) {
-            return false;
-        }
-
-        // Check if it ends with a non-affixable ending
-        for ending in NON_AFFIXABLE_ENDINGS {
-            if syl.len() > ending.len() && syl.ends_with(ending) {
+        // Check if it already ends with an affix particle (not affixable)
+        for affix in AFFIX_PARTICLES {
+            if syl.len() > affix.len() && syl.ends_with(affix) {
                 return false;
             }
         }
 
-        true
+        // Check if it ends with a valid affixable suffix
+        // Or if it's a root syllable
+        self.is_thame(syl)
     }
 
     /// Check if a syllable is "thame" (can potentially host affixed particles)
+    /// 
+    /// This uses a simplified heuristic:
+    /// - Check if the syllable ends with a valid suffix
+    /// - Check if the syllable is a known root
     pub fn is_thame(&self, syl: &str) -> bool {
-        // Simplified check - in production, use full get_info logic
-        self.thame_regex.is_match(syl) || self.roots.contains(syl)
+        // Check if it's a known root
+        if self.roots.contains(syl) {
+            return true;
+        }
+
+        // Check if it ends with a valid affixable suffix
+        // We check from longest to shortest
+        for suffix_len in (1..=4).rev() {
+            if syl.chars().count() > suffix_len {
+                let suffix: String = syl.chars().rev().take(suffix_len).collect::<Vec<_>>().into_iter().rev().collect();
+                if AFFIXABLE_SUFFIXES.contains(suffix.as_str()) {
+                    return true;
+                }
+            }
+        }
+
+        // Check if it ends with འ (which gets removed before affixation)
+        if syl.ends_with('འ') && syl.chars().count() > 1 {
+            return true;
+        }
+
+        false
     }
 
     /// Get all affixed forms of a syllable
@@ -194,6 +214,40 @@ mod tests {
         assert!(is_dagdra("བོ་"));
         assert!(is_dagdra("པ")); // Without tsek
         assert!(!is_dagdra("ཀ་"));
+    }
+
+    #[test]
+    fn test_is_affixable() {
+        let sc = SylComponents::new();
+        
+        // Test syllables that should be affixable
+        assert!(sc.is_affixable("ཤིས"), "ཤིས should be affixable (ends with ིས which is a valid suffix)");
+        assert!(sc.is_affixable("བཀྲ"), "བཀྲ should be affixable (it's a root)");
+        assert!(sc.is_affixable("ལེགས"), "ལེགས should be affixable");
+        
+        // Test syllables that should NOT be affixable (already affixed with particle)
+        // Note: These are single syllables with affixes attached, not multi-syllable words
+        assert!(!sc.is_affixable("ཤིསའི"), "ཤིསའི should NOT be affixable (ends with འི genitive)");
+        assert!(!sc.is_affixable("བཀྲའོ"), "བཀྲའོ should NOT be affixable (ends with འོ terminative)");
+    }
+
+    #[test]
+    fn test_get_all_affixed() {
+        let sc = SylComponents::new();
+        
+        // Test that affixed forms are generated
+        let affixed = sc.get_all_affixed("ཤིས");
+        assert!(affixed.is_some(), "ཤིས should generate affixed forms");
+        
+        let forms = affixed.unwrap();
+        assert!(!forms.is_empty(), "Should have generated at least one affixed form");
+        
+        // Check that specific affixes are generated (without tsek - affixes attach directly)
+        let affix_forms: Vec<&str> = forms.iter().map(|(f, _)| f.as_str()).collect();
+        println!("Generated affixed forms: {:?}", affix_forms);
+        assert!(affix_forms.contains(&"ཤིསར"), "Should contain ཤིསར (la affix)");
+        assert!(affix_forms.contains(&"ཤིསས"), "Should contain ཤིསས (gis affix)");
+        assert!(affix_forms.contains(&"ཤིསའི"), "Should contain ཤིསའི (gi affix)");
     }
 }
 

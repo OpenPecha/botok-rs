@@ -51,6 +51,8 @@ from .botok_rs import (
     Token,
     WordTokenizer,
     SimpleTokenizer,
+    Trie,
+    TrieBuilder,
     # Functions
     chunk,
     get_syls,
@@ -69,6 +71,8 @@ __all__ = [
     "Token",
     "WordTokenizer", 
     "SimpleTokenizer",
+    "Trie",
+    "TrieBuilder",
     # Functions
     "chunk",
     "get_syls",

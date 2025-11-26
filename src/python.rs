@@ -274,6 +274,125 @@ impl PyWordTokenizer {
     }
 }
 
+/// Trie data structure wrapper for Python
+/// 
+/// This wraps the internal Trie for advanced usage.
+#[pyclass(name = "Trie")]
+pub struct PyTrie {
+    trie: Trie,
+}
+
+#[pymethods]
+impl PyTrie {
+    /// Get the number of words in the trie
+    fn __len__(&self) -> usize {
+        self.trie.len()
+    }
+
+    /// Check if a word exists in the trie
+    fn has_word(&self, word: &str) -> bool {
+        let syls: Vec<&str> = word.split('་').filter(|s| !s.is_empty()).collect();
+        self.trie.has_word(&syls)
+    }
+
+    fn __repr__(&self) -> String {
+        format!("Trie(words={})", self.trie.len())
+    }
+}
+
+/// Trie Builder - for building custom dictionaries
+/// 
+/// Example:
+///     >>> from botok_rs import TrieBuilder
+///     >>> builder = TrieBuilder()  # Without inflection
+///     >>> builder = TrieBuilder.with_inflection()  # With auto-inflection
+///     >>> builder.load_tsv("བཀྲ་ཤིས\tNOUN\t\t\t1000")
+///     >>> trie = builder.build()
+#[pyclass(name = "TrieBuilder")]
+pub struct PyTrieBuilder {
+    builder: TrieBuilder,
+}
+
+#[pymethods]
+impl PyTrieBuilder {
+    /// Create a new TrieBuilder without inflection
+    #[new]
+    fn new() -> Self {
+        PyTrieBuilder {
+            builder: TrieBuilder::new(),
+        }
+    }
+
+    /// Create a new TrieBuilder with auto-inflection enabled
+    /// 
+    /// When inflection is enabled, all affixed forms of each word
+    /// are automatically generated and added to the trie.
+    #[staticmethod]
+    fn with_inflection() -> Self {
+        PyTrieBuilder {
+            builder: TrieBuilder::with_inflection(),
+        }
+    }
+
+    /// Enable or disable auto-inflection
+    fn set_inflection(&mut self, enable: bool) {
+        self.builder.set_inflection(enable);
+    }
+
+    /// Load words from a TSV string
+    /// 
+    /// Format: form\tpos\tlemma\tsense\tfreq
+    /// Lines starting with # are comments.
+    fn load_tsv(&mut self, tsv_content: &str) {
+        self.builder.load_tsv(tsv_content);
+    }
+
+    /// Load words from a TSV file
+    fn load_tsv_file(&mut self, path: &str) -> PyResult<()> {
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(e.to_string()))?;
+        self.builder.load_tsv(&content);
+        Ok(())
+    }
+
+    /// Add a word with all its inflected forms (if inflection is enabled)
+    #[pyo3(signature = (word, pos=None, lemma=None, freq=None))]
+    fn add_word(&mut self, word: &str, pos: Option<&str>, lemma: Option<&str>, freq: Option<u32>) {
+        let data = WordData {
+            pos: pos.map(|s| s.to_string()),
+            lemma: lemma.map(|s| s.to_string()),
+            freq,
+            ..Default::default()
+        };
+        self.builder.add_inflected_word(word, Some(data));
+    }
+
+    /// Deactivate a word and all its inflected forms
+    fn deactivate_word(&mut self, word: &str) {
+        self.builder.deactivate_inflected_word(word);
+    }
+
+    /// Build and return the Trie
+    /// 
+    /// Note: This consumes the builder. Create a new builder for additional tries.
+    fn build(&mut self) -> PyTrie {
+        // We need to swap out the builder since we can't consume self in PyO3
+        let builder = std::mem::replace(&mut self.builder, TrieBuilder::new());
+        PyTrie {
+            trie: builder.build(),
+        }
+    }
+
+    /// Get the current number of words in the trie being built
+    fn __len__(&self) -> usize {
+        self.builder.trie().len()
+    }
+
+    fn __repr__(&self) -> String {
+        format!("TrieBuilder(words={})", self.builder.trie().len())
+    }
+}
+
 /// Simple Tokenizer - syllable-level tokenization without dictionary
 /// 
 /// This tokenizer just splits text into syllables without dictionary lookup.
@@ -454,6 +573,8 @@ fn botok_rs(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<PyToken>()?;
     m.add_class::<PyWordTokenizer>()?;
     m.add_class::<PySimpleTokenizer>()?;
+    m.add_class::<PyTrie>()?;
+    m.add_class::<PyTrieBuilder>()?;
     m.add_function(wrap_pyfunction!(chunk, m)?)?;
     m.add_function(wrap_pyfunction!(get_syls, m)?)?;
     m.add_function(wrap_pyfunction!(tokenize_simple, m)?)?;

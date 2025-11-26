@@ -104,10 +104,12 @@ pub struct Sense {
     pub lemma: Option<String>,
     /// Frequency for this sense
     pub freq: Option<u32>,
-    /// Meaning/gloss
+    /// Sense description/gloss
+    pub sense: Option<String>,
+    /// Meaning/gloss (alias for sense)
     pub meaning: Option<String>,
     /// Whether this sense is for an affixed form
-    pub affixed: Option<bool>,
+    pub affixed: bool,
 }
 
 impl Token {
