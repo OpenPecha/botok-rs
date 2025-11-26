@@ -2,6 +2,8 @@
 //!
 //! This module provides Python-compatible wrappers around the Rust tokenizer.
 
+use std::sync::Arc;
+
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -126,7 +128,8 @@ impl PyToken {
 ///     ...     print(t.text, t.pos)
 #[pyclass(name = "WordTokenizer")]
 pub struct PyWordTokenizer {
-    trie: Trie,
+    /// Shared trie reference - avoids expensive clones on each tokenize() call
+    trie: Arc<Trie>,
 }
 
 #[pymethods]
@@ -143,7 +146,7 @@ impl PyWordTokenizer {
     #[new]
     #[pyo3(signature = (dialect_name=None, base_path=None, auto_download=true))]
     fn new(dialect_name: Option<&str>, base_path: Option<&str>, auto_download: bool) -> PyResult<Self> {
-        let mut tokenizer = PyWordTokenizer { trie: Trie::new() };
+        let mut trie = Trie::new();
         
         #[cfg(feature = "download")]
         if auto_download {
@@ -164,10 +167,10 @@ impl PyWordTokenizer {
                     builder.load_tsv(&content);
                 }
             }
-            tokenizer.trie = builder.build();
+            trie = builder.build();
         }
         
-        Ok(tokenizer)
+        Ok(PyWordTokenizer { trie: Arc::new(trie) })
     }
 
     /// Load words from a TSV string
@@ -177,9 +180,11 @@ impl PyWordTokenizer {
     fn load_tsv(&mut self, tsv_content: &str) {
         let mut builder = TrieBuilder::new();
         builder.load_tsv(tsv_content);
-        // Merge with existing trie
+        // Merge with existing trie - need to get mutable access
         let new_trie = builder.build();
-        self.trie.merge(&new_trie);
+        let mut trie = (*self.trie).clone();
+        trie.merge(&new_trie);
+        self.trie = Arc::new(trie);
     }
 
     /// Load words from a TSV file
@@ -214,7 +219,7 @@ impl PyWordTokenizer {
                 builder.load_tsv(&content);
             }
         }
-        self.trie = builder.build();
+        self.trie = Arc::new(builder.build());
         
         Ok(())
     }
@@ -234,20 +239,26 @@ impl PyWordTokenizer {
             freq,
             ..Default::default()
         };
-        self.trie.add_word(word, Some(data));
+        // Clone the trie, modify it, and replace
+        let mut trie = (*self.trie).clone();
+        trie.add_word(word, Some(data));
+        self.trie = Arc::new(trie);
     }
 
     /// Tokenize a string
     /// 
     /// Args:
     ///     text: The Tibetan text to tokenize
+    ///     split_affixes: Whether to split affixed particles (default: True)
     /// 
     /// Returns:
     ///     List of Token objects
-    fn tokenize(&self, text: &str) -> Vec<PyToken> {
-        let tokenizer = RustTokenizer::new(self.trie.clone());
+    #[pyo3(signature = (text, split_affixes=true))]
+    fn tokenize(&self, text: &str, split_affixes: bool) -> Vec<PyToken> {
+        // Use Arc::clone for cheap reference counting instead of cloning the whole trie
+        let tokenizer = RustTokenizer::with_arc(Arc::clone(&self.trie));
         tokenizer
-            .tokenize(text)
+            .tokenize_with_options(text, split_affixes)
             .into_iter()
             .map(PyToken::from)
             .collect()
@@ -255,11 +266,11 @@ impl PyWordTokenizer {
 
     /// Get the number of words in the dictionary
     fn __len__(&self) -> usize {
-        self.trie.len()
+        (*self.trie).len()
     }
 
     fn __repr__(&self) -> String {
-        format!("WordTokenizer(words={})", self.trie.len())
+        format!("WordTokenizer(words={})", (*self.trie).len())
     }
 }
 

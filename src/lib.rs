@@ -45,6 +45,8 @@
 
 pub mod char_categories;
 pub mod chunker;
+pub mod modifiers;
+pub mod syllable;
 pub mod token;
 pub mod tokenizer;
 pub mod trie;
@@ -60,7 +62,9 @@ pub mod python;
 // Re-export main types for convenience
 pub use char_categories::{get_char_category, BoString, CharCategory};
 pub use chunker::{Chunk, Chunker};
-pub use token::{ChunkType, Sense, Token};
+pub use modifiers::{apply_all_modifiers, merge_dagdra, split_affixed, generate_default_lemmas};
+pub use syllable::{SylComponents, AffixData, is_dagdra, DAGDRA, TSEK};
+pub use token::{AffixationInfo, ChunkType, Sense, Token};
 pub use tokenizer::{SimpleTokenizer, Tokenizer};
 pub use trie::{AffixInfo, Trie, TrieBuilder, TrieNode, WordData};
 

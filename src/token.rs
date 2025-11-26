@@ -78,6 +78,21 @@ pub struct Token {
 
     /// Additional senses/meanings from the dictionary
     pub senses: Vec<Sense>,
+
+    /// Affixation information (if this token contains an affix)
+    pub affixation: Option<AffixationInfo>,
+
+    /// Whether this token has had a dagdra merged into it
+    pub has_merged_dagdra: bool,
+}
+
+/// Information about affixation in a token
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AffixationInfo {
+    /// Length of the affix in characters
+    pub len: usize,
+    /// Whether འ was removed before adding the affix
+    pub aa: bool,
 }
 
 /// A word sense/meaning from the dictionary

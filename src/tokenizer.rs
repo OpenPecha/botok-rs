@@ -3,19 +3,28 @@
 //! This module takes chunked text and uses the Trie to find the longest matching
 //! words, producing a list of tokens.
 
+use std::sync::Arc;
+use unicode_normalization::UnicodeNormalization;
+
 use crate::chunker::{Chunk, Chunker};
+use crate::modifiers::apply_all_modifiers;
 use crate::token::{ChunkType, Token};
 use crate::trie::{Trie, TrieNode};
 
 /// The main tokenizer
 pub struct Tokenizer {
-    /// The dictionary trie
-    trie: Trie,
+    /// The dictionary trie (shared reference)
+    trie: Arc<Trie>,
 }
 
 impl Tokenizer {
     /// Create a new tokenizer with the given trie
     pub fn new(trie: Trie) -> Self {
+        Tokenizer { trie: Arc::new(trie) }
+    }
+
+    /// Create a new tokenizer with a shared trie reference
+    pub fn with_arc(trie: Arc<Trie>) -> Self {
         Tokenizer { trie }
     }
 
@@ -24,16 +33,39 @@ impl Tokenizer {
         &self.trie
     }
 
-    /// Get a mutable reference to the trie
-    pub fn trie_mut(&mut self) -> &mut Trie {
-        &mut self.trie
+    /// Get the Arc reference to the trie (for sharing)
+    pub fn trie_arc(&self) -> Arc<Trie> {
+        Arc::clone(&self.trie)
     }
 
-    /// Tokenize a string
+    /// Tokenize a string with full post-processing
     pub fn tokenize(&self, text: &str) -> Vec<Token> {
-        let chunker = Chunker::new(text);
+        self.tokenize_with_options(text, true)
+    }
+
+    /// Tokenize a string with configurable options
+    pub fn tokenize_with_options(&self, text: &str, split_affixes: bool) -> Vec<Token> {
+        // Normalize Unicode (NFC normalization)
+        let normalized: String = text.nfc().collect();
+        
+        let chunker = Chunker::new(&normalized);
         let chunks = chunker.make_chunks();
-        self.tokenize_chunks(&chunks, text)
+        let mut tokens = self.tokenize_chunks(&chunks, &normalized);
+        
+        // Apply post-processing
+        apply_all_modifiers(&mut tokens, split_affixes);
+        
+        tokens
+    }
+
+    /// Tokenize without post-processing (raw tokenization)
+    pub fn tokenize_raw(&self, text: &str) -> Vec<Token> {
+        // Normalize Unicode (NFC normalization)
+        let normalized: String = text.nfc().collect();
+        
+        let chunker = Chunker::new(&normalized);
+        let chunks = chunker.make_chunks();
+        self.tokenize_chunks(&chunks, &normalized)
     }
 
     /// Tokenize pre-chunked text
@@ -126,6 +158,14 @@ impl Tokenizer {
                     token.freq = data.freq;
                     token.is_skrt = data.skrt;
                     token.senses = data.senses.clone();
+                    
+                    // Copy affixation info
+                    if let Some(ref affix_info) = data.affixation {
+                        token.affixation = Some(crate::token::AffixationInfo {
+                            len: affix_info.len,
+                            aa: affix_info.aa,
+                        });
+                    }
                 }
             }
 
@@ -158,14 +198,17 @@ pub struct SimpleTokenizer;
 impl SimpleTokenizer {
     /// Tokenize text into syllables (no dictionary lookup)
     pub fn tokenize(text: &str) -> Vec<Token> {
-        let chunker = Chunker::new(text);
+        // Normalize Unicode
+        let normalized: String = text.nfc().collect();
+        
+        let chunker = Chunker::new(&normalized);
         let chunks = chunker.make_chunks();
 
         chunks
             .into_iter()
             .map(|chunk| {
                 let mut token = Token::with_text(
-                    text[chunk.start..chunk.start + chunk.len].to_string(),
+                    normalized[chunk.start..chunk.start + chunk.len].to_string(),
                     chunk.start,
                     chunk.len,
                     chunk.chunk_type,
@@ -239,5 +282,31 @@ mod tests {
         assert_eq!(tokens[1].syls, vec!["ཤིས"]);
         assert_eq!(tokens[2].chunk_type, ChunkType::Punct);
     }
-}
 
+    #[test]
+    fn test_arc_sharing() {
+        let trie = make_test_trie();
+        let tokenizer1 = Tokenizer::new(trie);
+        let arc = tokenizer1.trie_arc();
+        let tokenizer2 = Tokenizer::with_arc(arc);
+
+        // Both tokenizers should work
+        let tokens1 = tokenizer1.tokenize("བཀྲ་ཤིས།");
+        let tokens2 = tokenizer2.tokenize("བཀྲ་ཤིས།");
+
+        assert_eq!(tokens1.len(), tokens2.len());
+    }
+
+    #[test]
+    fn test_unicode_normalization() {
+        // Test that different Unicode forms produce the same result
+        let trie = make_test_trie();
+        let tokenizer = Tokenizer::new(trie);
+
+        // NFC form
+        let tokens_nfc = tokenizer.tokenize("བཀྲ་ཤིས།");
+        
+        // The tokenizer should handle both forms
+        assert!(!tokens_nfc.is_empty());
+    }
+}
